@@ -663,7 +663,7 @@ impl Database {
         let old_source = face_info.source.clone();
 
         let (path, shared_data) = match &old_source {
-            Source::Custom(callback) => return Some((callback(), face_index)),
+            Source::Custom(callback) => return Some((callback()?, face_index)),
             Source::Binary(data) => {
                 return Some((data.clone(), face_index));
             }
@@ -780,7 +780,7 @@ pub enum Source {
     /// A custom font source, where the data of the font will be loaded via
     /// a callback. Should be used in tandem with [`Database::push_face_info`]
     /// to make sure the font data is only requested when actually needed.
-    Custom(alloc::sync::Arc<Box<dyn Fn() -> alloc::sync::Arc<dyn AsRef<[u8]> + Sync + Send>>>),
+    Custom(alloc::sync::Arc<dyn Fn() -> Option<alloc::sync::Arc<dyn AsRef<[u8]> + Sync + Send>> + Sync + Send>),
     /// A font's raw data, typically backed by a Vec<u8>.
     Binary(alloc::sync::Arc<dyn AsRef<[u8]> + Sync + Send>),
     /// A font's path.
@@ -798,9 +798,8 @@ pub enum Source {
 impl core::fmt::Debug for Source {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Source::Custom(arg0) => f
-                .debug_tuple("Custom")
-                .field(&arg0().as_ref().as_ref())
+            Source::Custom(_) => f
+                .debug_tuple("Custom(...)")
                 .finish(),
             Self::Binary(arg0) => f
                 .debug_tuple("SharedBinary")
@@ -824,7 +823,7 @@ impl Source {
         P: FnOnce(&[u8]) -> T,
     {
         match &self {
-            Source::Custom(ref callback) => Some(p(callback().as_ref().as_ref())),
+            Source::Custom(ref callback) => Some(p(callback()?.as_ref().as_ref())),
             #[cfg(all(feature = "fs", not(feature = "memmap")))]
             Source::File(ref path) => {
                 let data = std::fs::read(path).ok()?;
