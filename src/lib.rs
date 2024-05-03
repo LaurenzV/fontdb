@@ -763,12 +763,87 @@ pub struct FaceInfo {
     /// A font face weight.
     pub weight: Weight,
 
+    /// The coverage of the font.
+    pub coverage: Coverage,
+
     /// A font face stretch.
     pub stretch: Stretch,
 
     /// Indicates that the font face is monospaced.
     pub monospaced: bool,
 }
+
+/// A compactly encoded set of codepoints.
+///
+/// The set is represented by alternating specifications of how many codepoints
+/// are not in the set and how many are in the set.
+///
+/// For example, for the set `{2, 3, 4, 9, 10, 11, 15, 18, 19}`, there are:
+/// - 2 codepoints not inside (0, 1)
+/// - 3 codepoints inside (2, 3, 4)
+/// - 4 codepoints not inside (5, 6, 7, 8)
+/// - 3 codepoints inside (9, 10, 11)
+/// - 3 codepoints not inside (12, 13, 14)
+/// - 1 codepoint inside (15)
+/// - 2 codepoints not inside (16, 17)
+/// - 2 codepoints inside (18, 19)
+///
+/// So the resulting encoding is `[2, 3, 4, 3, 3, 1, 2, 2]`.
+#[derive(Clone, Debug)]
+pub struct Coverage(Vec<u32>);
+
+impl Coverage {
+    /// Encode a vector of codepoints.
+    pub fn from_vec(mut codepoints: Vec<u32>) -> Self {
+        codepoints.sort();
+        codepoints.dedup();
+
+        let mut runs = Vec::new();
+        let mut next = 0;
+
+        for c in codepoints {
+            if let Some(run) = runs.last_mut().filter(|_| c == next) {
+                *run += 1;
+            } else {
+                runs.push(c - next);
+                runs.push(1);
+            }
+
+            next = c + 1;
+        }
+
+        Self(runs)
+    }
+
+    /// Whether the codepoint is covered.
+    pub fn contains(&self, c: u32) -> bool {
+        let mut inside = false;
+        let mut cursor = 0;
+
+        for &run in &self.0 {
+            if (cursor..cursor + run).contains(&c) {
+                return inside;
+            }
+            cursor += run;
+            inside = !inside;
+        }
+
+        false
+    }
+
+    /// Iterate over all covered codepoints.
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut inside = false;
+        let mut cursor = 0;
+        self.0.iter().flat_map(move |run| {
+            let range = if inside { cursor..cursor + run } else { 0..0 };
+            inside = !inside;
+            cursor += run;
+            range
+        })
+    }
+}
+
 
 /// A font source.
 ///
@@ -958,6 +1033,7 @@ fn parse_face_info(source: Source, data: &[u8], index: u32) -> Result<FaceInfo, 
     let (families, post_script_name) = parse_names(&raw_face).ok_or(LoadError::UnnamedFont)?;
     let (mut style, weight, stretch) = parse_os2(&raw_face);
     let (monospaced, italic) = parse_post(&raw_face);
+    let coverage = parse_coverage(&raw_face).ok_or(LoadError::MalformedFont)?;
 
     if style == Style::Normal && italic {
         style = Style::Italic;
@@ -970,10 +1046,26 @@ fn parse_face_info(source: Source, data: &[u8], index: u32) -> Result<FaceInfo, 
         families,
         post_script_name,
         style,
+        coverage,
         weight,
         stretch,
         monospaced,
     })
+}
+
+fn parse_coverage(raw_face: &ttf_parser::RawFace) -> Option<Coverage> {
+    const NAME_TAG: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"cmap");
+    let cmap_data = raw_face.table(NAME_TAG)?;
+    let cmap_table = ttf_parser::cmap::Table::parse(cmap_data)?;
+
+    let mut codepoints = vec![];
+    for subtable in cmap_table.subtables {
+        if subtable.is_unicode() {
+            subtable.codepoints(|c| codepoints.push(c));
+        }
+    }
+
+    Some(Coverage::from_vec(codepoints))
 }
 
 fn parse_names(raw_face: &ttf_parser::RawFace) -> Option<(Vec<(String, Language)>, String)> {
