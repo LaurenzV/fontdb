@@ -68,6 +68,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use std::sync::Arc;
 
 pub use ttf_parser::Language;
 pub use ttf_parser::Width as Stretch;
@@ -663,6 +664,9 @@ impl Database {
         let old_source = face_info.source.clone();
 
         let (path, shared_data) = match &old_source {
+            Source::Custom(data) => {
+                return Some((data.get(), face_index))
+            }
             Source::Binary(data) => {
                 return Some((data.clone(), face_index));
             }
@@ -769,6 +773,10 @@ pub struct FaceInfo {
     pub monospaced: bool,
 }
 
+trait CustomSource {
+    fn get(&self) -> alloc::sync::Arc<dyn AsRef<[u8]> + Sync + Send>;
+}
+
 /// A font source.
 ///
 /// Either a raw binary data or a file path.
@@ -776,6 +784,7 @@ pub struct FaceInfo {
 /// Stores the whole font and not just a single face.
 #[derive(Clone)]
 pub enum Source {
+    Custom(Arc<Box<dyn CustomSource>>),
     /// A font's raw data, typically backed by a Vec<u8>.
     Binary(alloc::sync::Arc<dyn AsRef<[u8]> + Sync + Send>),
 
@@ -794,6 +803,10 @@ pub enum Source {
 impl core::fmt::Debug for Source {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Source::Custom(arg0) => f
+                .debug_tuple("SharedBinary")
+                .field(&arg0.get().as_ref().as_ref())
+                .finish(),
             Self::Binary(arg0) => f
                 .debug_tuple("SharedBinary")
                 .field(&arg0.as_ref().as_ref())
@@ -816,6 +829,7 @@ impl Source {
         P: FnOnce(&[u8]) -> T,
     {
         match &self {
+            Source::Custom(ref data) => Some(p(data.get().as_ref().as_ref())),
             #[cfg(all(feature = "fs", not(feature = "memmap")))]
             Source::File(ref path) => {
                 let data = std::fs::read(path).ok()?;
